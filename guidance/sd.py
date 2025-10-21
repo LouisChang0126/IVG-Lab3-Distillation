@@ -109,7 +109,12 @@ class StableDiffusion(nn.Module):
         Reference: DreamFusion (https://arxiv.org/abs/2209.14988)
         """
         # TODO: Implement SDS loss
-        raise NotImplementedError("TODO: Implement SDS loss")
+        t = torch.randint(self.min_step, self.max_step + 1, (latents.shape[0],), device=self.device)
+        noise = torch.randn_like(latents)
+        noisy_latents = self.scheduler.add_noise(latents, noise, t)
+        noise_pred = self.get_noise_preds(noisy_latents, t, text_embeddings, guidance_scale)
+        loss = ((noise_pred - noise).detach() * latents).sum()
+        return loss
     
     def get_vsd_loss(self, latents, text_embeddings, guidance_scale=7.5, lora_loss_weight=1.0):
         """
@@ -118,7 +123,17 @@ class StableDiffusion(nn.Module):
         Reference: ProlificDreamer (https://arxiv.org/abs/2305.16213)
         """
         # TODO: Implement VSD loss
-        raise NotImplementedError("TODO: Implement VSD loss")
+        t = torch.randint(self.min_step, self.max_step + 1, (latents.shape[0],), device=self.device)
+        noise = torch.randn_like(latents)
+        noisy_latents = self.scheduler.add_noise(latents, noise, t)
+        self.unet.disable_lora()
+        noise_pred_pretrain = self.get_noise_preds(noisy_latents, t, text_embeddings, guidance_scale)
+        self.unet.enable_lora()
+        noise_pred_lora = self.get_noise_preds(noisy_latents, t, text_embeddings, guidance_scale)
+                
+        loss1 = ((noise_pred_pretrain - noise_pred_lora).detach() * latents).sum()
+        loss2 = F.mse_loss(noise_pred_lora, noise)
+        return loss1 + loss2 * lora_loss_weight
     
     @torch.no_grad()
     def invert_noise(self, latents, target_t, text_embeddings, guidance_scale=-7.5, n_steps=10, eta=0.3):
