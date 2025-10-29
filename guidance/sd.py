@@ -130,7 +130,6 @@ class StableDiffusion(nn.Module):
         noise_pred_pretrain = self.get_noise_preds(noisy_latents, t, text_embeddings, guidance_scale)
         self.unet.enable_lora()
         noise_pred_lora = self.get_noise_preds(noisy_latents, t, text_embeddings, guidance_scale)
-        print(noise_pred_pretrain - noise_pred_lora)
         
         loss1 = ((noise_pred_pretrain - noise_pred_lora).detach() * latents).sum()
         loss2 = F.mse_loss(noise_pred_lora, noise)
@@ -250,7 +249,7 @@ class StableDiffusion(nn.Module):
                 noise_pred = self.get_noise_preds(latents_noisy, t, text_embeddings, guidance_scale)
                 
                 # TODO: Denoise to get target x0 using predicted noise
-                a_t = self.alphas[t].view(B, 1, 1, 1)
+                a_t = self.alphas[t]
                 sqrt_a_t = torch.sqrt(a_t)
                 sqrt_om_t = torch.sqrt(1.0 - a_t)
 
