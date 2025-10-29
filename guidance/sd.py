@@ -130,7 +130,8 @@ class StableDiffusion(nn.Module):
         noise_pred_pretrain = self.get_noise_preds(noisy_latents, t, text_embeddings, guidance_scale)
         self.unet.enable_lora()
         noise_pred_lora = self.get_noise_preds(noisy_latents, t, text_embeddings, guidance_scale)
-                
+        print(noise_pred_pretrain - noise_pred_lora)
+        
         loss1 = ((noise_pred_pretrain - noise_pred_lora).detach() * latents).sum()
         loss2 = F.mse_loss(noise_pred_lora, noise)
         return loss1 + loss2 * lora_loss_weight
@@ -159,7 +160,31 @@ class StableDiffusion(nn.Module):
         # You may *read* external implementations for reference, but you must
         # NOT call any "invert"/"ddim_invert"/"invert_step" utilities
         # from diffusers or other libraries.
-        raise NotImplementedError("TODO: Implement DDIM inversion")
+        target_t_int = int(max(self.min_step, min(self.max_step, int(target_t))))
+
+        steps = torch.linspace(0, target_t_int, n_steps + 1, device=self.device)
+        steps = torch.round(steps).long()
+        steps = torch.unique_consecutive(steps)
+
+        x = latents.clone()
+        for i in range(len(steps) - 1):
+            t_prev = steps[i].item()
+            t_next = steps[i + 1].item()
+
+            t_prev_batch = torch.full((latents.shape[0],), t_prev, dtype=torch.long, device=self.device)
+            eps = self.get_noise_preds(x, t_prev_batch, text_embeddings, guidance_scale)
+
+            a_prev = self.alphas[t_prev]
+            a_next = self.alphas[t_next]
+            sqrt_a_prev = a_prev.sqrt()
+            sqrt_om_prev = (1.0 - a_prev).sqrt()
+            sqrt_a_next = a_next.sqrt()
+            sqrt_om_next = (1.0 - a_next).sqrt()
+
+            x0_pred = (x - sqrt_om_prev * eps) / (sqrt_a_prev + 1e-8)
+            x = sqrt_a_next * x0_pred + sqrt_om_next * eps
+
+        return x
     
     def get_sdi_loss(
         self, 
@@ -203,7 +228,10 @@ class StableDiffusion(nn.Module):
         B = latents.shape[0]
         
         # TODO: Create current timestep tensor based on training progress
-        # t = ...
+        p = float(current_iter) / max(1, int(total_iters))
+        t_float = self.max_step - p * (self.max_step - self.min_step)
+        t_int = int(max(self.min_step, min(self.max_step, int(round(t_float)))))
+        t = torch.full((B,), t_int, dtype=torch.long, device=self.device)
         
         # Check if we need to update target
         should_update = (current_iter % update_interval == 0) or not hasattr(self, 'sdi_target')
@@ -219,16 +247,20 @@ class StableDiffusion(nn.Module):
                 )
                 
                 # TODO: Predict noise from inverted noisy latents
-                # noise_pred = ...
+                noise_pred = self.get_noise_preds(latents_noisy, t, text_embeddings, guidance_scale)
                 
                 # TODO: Denoise to get target x0 using predicted noise
-                # target = ...
+                a_t = self.alphas[t].view(B, 1, 1, 1)
+                sqrt_a_t = torch.sqrt(a_t)
+                sqrt_om_t = torch.sqrt(1.0 - a_t)
+
+                target = (latents_noisy - sqrt_om_t * noise_pred) / (sqrt_a_t + 1e-8)
                 
                 # Cache the target
                 self.sdi_target = target.detach()
         
         # TODO: Compute MSE loss between current latents and cached target
-        # loss = ...
+        loss = F.mse_loss(latents, self.sdi_target)
         
         return loss
         
